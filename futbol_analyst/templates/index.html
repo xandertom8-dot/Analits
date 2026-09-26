@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analista de Fútbol - Probabilidades y Valor</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>⚽ ANALISTA DE FÚTBOL</h1>
+        <p class="subtitle">Probabilidades · Cuota Justa · Valor Esperado</p>
+
+        <!-- FORMULARIO PRINCIPAL -->
+        <div class="card">
+            <h2>📊 DATOS DEL PARTIDO</h2>
+
+            <div class="tab-buttons">
+                <button id="tabHistorico" class="btn" style="background:linear-gradient(135deg,#00d4ff,#0088cc);"
+                    onclick="cambiarTab('historico')">
+                    📊 CARGAR HISTÓRICO
+                </button>
+                <button id="tabPronostico" class="btn btn-secondary" onclick="cambiarTab('pronostico')">
+                    🔮 PRONOSTICAR
+                </button>
+                <button id="tabBacktesting" class="btn btn-secondary" onclick="cambiarTab('backtesting')">
+                    📈 BACKTESTING
+                </button>
+            </div>
+
+            <!-- ===== MODO HISTÓRICO ===== -->
+            <div id="modoHistorico">
+                <h3 style="color:#00d4ff; margin-bottom:15px;">📊 Cargar estadísticas de partidos ya jugados</h3>
+                <form id="analisisForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>🌍 Continente</label>
+                            <select id="continente" onchange="cargarPaises()">
+                                <option value="">Selecciona un continente</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>🌍 País</label>
+                            <select id="pais" onchange="cargarLigas()">
+                                <option value="">Selecciona un país</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>🏆 Liga / Competición</label>
+                            <select id="liga" onchange="cargarTemporadas()">
+                                <option value="">Selecciona una liga</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>📅 Temporada</label>
+                            <select id="temporada" onchange="cargarEquipos()">
+                                <option value="">Selecciona una temporada</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>📆 Fecha del partido</label>
+                            <input type="date" id="fecha">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>🏠 Equipo Local</label>
+                            <select id="local" onchange="actualizarTitulos()">
+                                <option value="">Selecciona equipo local</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>✈️ Equipo Visitante</label>
+                            <select id="visitante" onchange="actualizarTitulos()">
+                                <option value="">Selecciona equipo visitante</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- ========== SELECTOR DE MODO ========== -->
+                    <div style="margin: 20px 0 15px 0;">
+                        <h3 style="color:#00d4ff; margin-bottom:12px;">📋 ESTADÍSTICAS DEL PARTIDO</h3>
+                        <div class="tab-buttons" style="border-bottom:none; padding-bottom:0;">
+                            <button type="button" id="modoBtnUnificado" class="btn" style="background:linear-gradient(135deg,#8844ff,#6622cc);" onclick="cambiarModoIngesta('unificado')">
+                                📋 PEGADO UNIFICADO
+                            </button>
+                            <button type="button" id="modoBtnAntiguo" class="btn btn-secondary" onclick="cambiarModoIngesta('antiguo')">
+                                📊 MODO ANTIGUO (2 textareas)
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- ========== MODO UNIFICADO ========== -->
+                    <div id="modoIngestaUnificado">
+                        <div style="background:#8844ff11; padding:12px; border-radius:8px; margin-bottom:15px; border:1px solid #8844ff44;">
+                            <p style="color:#8899aa; font-size:0.85em; margin:0;">
+                                <strong style="color:#8844ff;">📋 Pegado unificado:</strong> Pega TODO el texto (estadísticas de ambos equipos + timeline). 
+                                El sistema separa automáticamente los equipos y detecta goles en propia puerta.
+                            </p>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="textoUnificado" 
+                                placeholder="===== ESTADÍSTICAS DE JUGADORES =====&#10;&#10;--- EQUIPO 1 ---&#10;...&#10;&#10;--- EQUIPO 2 ---&#10;...&#10;&#10;===== TIMELINE =====&#10;&#10;--- LOCAL ---&#10;...&#10;&#10;--- VISITANTE ---&#10;..."
+                                style="min-height:400px; font-family:'Courier New', monospace; font-size:0.8em;"></textarea>
+                        </div>
+                        
+                        <!-- ========== INFO DEL TIMELINE (se rellena al pegar) ========== -->
+                        <div id="infoTimeline" style="display:none; margin-top:15px; padding:12px; background:#0a121c; border-radius:8px; border:1px solid #00d4ff44;">
+                            <h4 style="color:#00d4ff; margin-bottom:10px; font-size:0.9em;">📊 ANÁLISIS DEL PEGADO</h4>
+                            <div id="infoTimelineContent"></div>
+                        </div>
+                    </div>
+
+                    <!-- ========== MODO ANTIGUO (2 textareas + OG manual) ========== -->
+                    <div id="modoIngestaAntiguo" style="display:none;">
+                        <div class="stats-grid-2">
+                            <div class="stats-box">
+                                <div class="box-title local" id="tituloLocal">🏠 ESTADÍSTICAS DEL LOCAL</div>
+                                <p style="color:#8899aa; font-size:0.8em; margin-bottom:8px;">Pega aquí las estadísticas del
+                                    equipo local</p>
+                                <textarea id="estadisticasLocal"
+                                    placeholder="Pega las estadísticas del equipo LOCAL..."></textarea>
+                            </div>
+                            <div class="stats-box">
+                                <div class="box-title visitante" id="tituloVisitante">✈️ ESTADÍSTICAS DEL VISITANTE</div>
+                                <p style="color:#8899aa; font-size:0.8em; margin-bottom:8px;">Pega aquí las estadísticas del
+                                    equipo visitante</p>
+                                <textarea id="estadisticasVisitante"
+                                    placeholder="Pega las estadísticas del equipo VISITANTE..."></textarea>
+                            </div>
+                        </div>
+
+                        <!-- ========== GOLES EN PROPIA PUERTA (solo modo antiguo) ========== -->
+                        <div style="background:#0a121c; padding:15px; border-radius:8px; margin: 20px 0; border:1px solid #ffaa0044;">
+                            <h3 style="color:#ffaa00; margin-bottom:8px;">⚽ GOLES EN PROPIA PUERTA (opcional)</h3>
+                            <p style="color:#8899aa; font-size:0.8em; margin-bottom:12px;">
+                                Si el partido tuvo autogoles, indícalos aquí. <strong style="color:#ffaa00;">No se suman al goleador</strong>,
+                                pero sí cuentan en el marcador y penalizan la defensa del equipo que los metió.
+                            </p>
+                            <div class="form-row" style="margin-bottom:0;">
+                                <div class="form-group">
+                                    <label style="color:#00d4ff;">🏠 OG del Local (suman al visitante)</label>
+                                    <input type="number" id="ogLocal" min="0" value="0" step="1">
+                                </div>
+                                <div class="form-group">
+                                    <label style="color:#ff8844;">✈️ OG del Visitante (suman al local)</label>
+                                    <input type="number" id="ogVisitante" min="0" value="0" step="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="limpiarDespues" checked>
+                        <label for="limpiarDespues">🧹 Limpiar automáticamente los campos después de guardar</label>
+                    </div>
+
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-success" onclick="guardarDatos()">💾 GUARDAR EN
+                            HISTÓRICO</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- ===== MODO PRONÓSTICO ===== -->
+            <div id="modoPronostico" style="display:none;">
+                <h3 style="color:#ff8844; margin-bottom:15px;">🔮 Pronosticar partido FUTURO basado en histórico</h3>
+                <div
+                    style="background:#0a121c; padding:15px; border-radius:8px; margin:15px 0; border:1px solid #1a2a3a;">
+                    <p style="color:#8899aa; font-size:0.9em;">
+                        ⚠️ El pronóstico se basa en los datos históricos guardados.
+                        <br>Necesitas al menos <strong style="color:#00d4ff;">3 partidos</strong> de cada equipo para
+                        generar un pronóstico fiable.
+                    </p>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>🌍 Continente</label>
+                        <select id="pronosticoContinente" onchange="cargarPaisesPronostico()">
+                            <option value="">Selecciona un continente</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>🌍 País</label>
+                        <select id="pronosticoPais" onchange="cargarLigasPronostico()">
+                            <option value="">Selecciona un país</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>🏆 Liga / Competición</label>
+                        <select id="pronosticoLiga" onchange="cargarTemporadasPronostico()">
+                            <option value="">Selecciona una liga</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>📅 Temporada</label>
+                        <select id="pronosticoTemporada" onchange="cargarEquiposPronostico()">
+                            <option value="">Selecciona una temporada</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>🏠 Equipo Local</label>
+                        <select id="pronosticoLocal">
+                            <option value="">Selecciona equipo local</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>✈️ Equipo Visitante</label>
+                        <select id="pronosticoVisitante">
+                            <option value="">Selecciona equipo visitante</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>💶 Cuota real (opcional)</label>
+                        <input type="number" id="pronosticoCuotaReal" step="0.01" placeholder="Ej: 1.85">
+                    </div>
+                    <div class="form-group">
+                        <label>🎯 Mercado a guardar</label>
+                        <input type="text" id="pronosticoMercadoGuardar" readonly
+                            style="background:#0a121c; border:1px solid #1a2a3a; color:#00ff88; padding:10px 14px; border-radius:8px; font-size:0.9em; cursor:not-allowed;">
+                    </div>
+                </div>
+                <button type="button" class="btn" onclick="generarPronostico()"
+                    style="background:linear-gradient(135deg,#ff8844,#cc6600);">
+                    🔮 GENERAR PRONÓSTICO
+                </button>
+
+                <div style="margin-top:20px; padding-top:15px; border-top:1px solid #1a2a3a;">
+                    <h4 style="color:#00ff88; margin-bottom:10px;">💾 Guardar este pronóstico para backtesting</h4>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>🎯 Mercado a analizar</label>
+                            <select id="pronosticoMercadoPrincipal">
+                                <option value="todos">📊 TODOS LOS MERCADOS</option>
+                                <optgroup label="⚽ GOLES">
+                                    <option value="1X2">1X2 — Ganador del partido</option>
+                                    <option value="DobleOportunidad">Doble Oportunidad (1X / 12 / X2)</option>
+                                    <option value="BTTS">BTTS — Ambos marcan</option>
+                                    <option value="Over_0.5">Over/Under 0.5 goles</option>
+                                    <option value="Over_1.5">Over/Under 1.5 goles</option>
+                                    <option value="Over_2.5">Over/Under 2.5 goles</option>
+                                    <option value="Over_3.5">Over/Under 3.5 goles</option>
+                                    <option value="Over_4.5">Over/Under 4.5 goles</option>
+                                    <option value="Over_5.5">Over/Under 5.5 goles</option>
+                                    <option value="GolesLocal">Goles del Local (0/1/2/3+)</option>
+                                    <option value="GolesVisitante">Goles del Visitante (0/1/2/3+)</option>
+                                    <option value="TopMarcadores">Top 5 marcadores exactos</option>
+                                </optgroup>
+                                <optgroup label="🚩 CÓRNERS">
+                                    <option value="Corners">Todos los córners (líneas 6.5–12.5)</option>
+                                    <option value="Corners_8.5">Córners Over/Under 8.5</option>
+                                    <option value="Corners_9.5">Córners Over/Under 9.5</option>
+                                    <option value="Corners_10.5">Córners Over/Under 10.5</option>
+                                    <option value="Corners_11.5">Córners Over/Under 11.5</option>
+                                </optgroup>
+                                <optgroup label="🟨 TARJETAS">
+                                    <option value="Tarjetas">Todas las tarjetas (líneas 1.5–7.5)</option>
+                                    <option value="Tarjetas_2.5">Tarjetas Over/Under 2.5</option>
+                                    <option value="Tarjetas_3.5">Tarjetas Over/Under 3.5</option>
+                                    <option value="Tarjetas_4.5">Tarjetas Over/Under 4.5</option>
+                                    <option value="Tarjetas_5.5">Tarjetas Over/Under 5.5</option>
+                                </optgroup>
+                                <optgroup label="👤 JUGADORES">
+                                    <option value="Goleadores">⚽ Goleadores (prob. de marcar)</option>
+                                    <option value="Porteros">🧤 Porteros (prob. de paradas)</option>
+                                    <option value="Tiros">🎯 Tiros por jugador</option>
+                                    <option value="FaltasJugadores">⚔️ Faltas por jugador</option>
+                                </optgroup>
+                                <optgroup label="💰 VALOR">
+                                    <option value="Valor">Solo mercados con EV / valor</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-success" onclick="guardarPronostico()">
+                        💾 GUARDAR PRONÓSTICO
+                    </button>
+                    <!-- ========== CONFIGURACIÓN DE KELLY ========== -->
+                    <div style="margin-top:20px; padding:15px; background:#0a121c; border-radius:8px; border:1px solid #00ff8844;">
+                        <h4 style="color:#00ff88; margin-bottom:10px;">💰 GESTIÓN DE BANKROLL (Kelly)</h4>
+                        <p style="color:#8899aa; font-size:0.8em; margin-bottom:12px;">
+                            Configura tu capital, fracción de Kelly y stake mínimo. El stake sugerido se recalculará en el pronóstico.
+                        </p>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>💵 Bankroll (COP)</label>
+                                <input type="number" id="kellyBankroll" min="0" step="100" value="10000">
+                            </div>
+                            <div class="form-group">
+                                <label>📊 Fracción de Kelly</label>
+                                <select id="kellyFraccion">
+                                    <option value="1.0">Kelly completo (agresivo)</option>
+                                    <option value="0.5">1/2 Kelly (moderado)</option>
+                                    <option value="0.25" selected>1/4 Kelly (recomendado)</option>
+                                    <option value="0.125">1/8 Kelly (conservador)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>🚫 Stake mínimo (COP)</label>
+                                <input type="number" id="kellyStakeMinimo" min="0" step="100" value="500">
+                            </div>
+                            <div class="form-group" style="justify-content:flex-end;">
+                                <p style="color:#8899aa; font-size:0.75em; margin:0; padding-top:5px;">
+                                    Si el stake Kelly es menor, se sube al mínimo (solo si Kelly &gt; 0).
+                                </p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-secondary" style="padding:10px 20px; font-size:0.85em; margin-top:5px;" onclick="aplicarKellyConfig()">
+                            🔄 Aplicar y recalcular
+                        </button>
+                        <p style="color:#8899aa; font-size:0.75em; margin-top:10px;">
+                            💾 Se guarda automáticamente en tu navegador.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== MODO BACKTESTING ===== -->
+            <div id="modoBacktesting" style="display:none;">
+                <h3 style="color:#00ff88; margin-bottom:15px;">📈 Backtesting y Calibración del Modelo</h3>
+
+                <div class="btn-group" style="margin-bottom:20px; display:flex; flex-wrap:wrap; align-items:center;">
+                    <button class="btn btn-secondary" onclick="cargarBacktesting()">🔄 ACTUALIZAR MÉTRICAS</button>
+                    <button class="btn" onclick="cargarPronosticos()">📋 VER PRONÓSTICOS</button>
+                    <button class="btn btn-success" onclick="cerrarConApi()">🌐 CERRAR CON API</button>
+                    <button class="btn btn-secondary" onclick="probarApiExterna()">🔌 TEST API</button>
+                    <button class="btn" onclick="generarAutomaticos()" style="background:linear-gradient(135deg,#8844ff,#6622cc);">🤖 GENERAR AUTOMÁTICOS</button>
+                    <button class="btn btn-danger" onclick="borrarTodosPronosticos()" style="margin-left:auto;">🗑️ BORRAR</button>                    
+                </div>
+
+                <!-- Métricas Generales -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">📊 MÉTRICAS GENERALES</h4>
+                    <div id="metricasGenerales">
+                        <p style="color:#8899aa;">Pulsa "ACTUALIZAR MÉTRICAS" para cargar.</p>
+                    </div>
+                </div>
+
+                <!-- Pronósticos Guardados -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">📋 PRONÓSTICOS GUARDADOS</h4>
+                    <div id="listaPronosticos">
+                        <p style="color:#8899aa;">Pulsa "VER PRONÓSTICOS" para cargar.</p>
+                    </div>
+                </div>
+
+                <!-- Calibración -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">🎯 CALIBRACIÓN (predicho vs real)</h4>
+                    <div id="tablaCalibracion">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>
+
+                <!-- Por motor -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">⚙️ RENDIMIENTO POR MOTOR</h4>
+                    <div id="tablaPorMotor">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>
+
+                <!-- Por liga -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">🏆 RENDIMIENTO POR LIGA</h4>
+                    <div id="tablaPorLiga">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>
+
+                <!-- Por confianza -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">🎚️ RENDIMIENTO POR CONFIANZA</h4>
+                    <div id="tablaPorConfianza">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>                
+
+                <!-- Por mercado -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">🎯 RENDIMIENTO POR MERCADO</h4>
+                    <p style="color:#8899aa;font-size:0.8em;margin-bottom:12px;">
+                        Cada mercado evaluado individualmente. Solo aparecen los que tienen datos reales (por vinculación al histórico o cierre manual).
+                    </p>
+                    <div id="tablaPorMercado">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>
+                <!-- MAE / RMSE -->
+                <div
+                    style="background:#0a121c;padding:15px;border-radius:8px;margin-bottom:20px;border:1px solid #1a2a3a;">
+                    <h4 style="color:#00d4ff;margin-bottom:10px;">📏 MAE / RMSE DE GOLES</h4>
+                    <p style="color:#8899aa;font-size:0.8em;margin-bottom:12px;">
+                        Precisión del modelo: cuánto se desvía λ predicho de los goles reales.
+                    </p>
+                    <div id="tablaMaeRmse">
+                        <p style="color:#8899aa;">Se carga con las métricas.</p>
+                    </div>
+                </div>                
+            </div>
+        </div>
+
+        <!-- RESULTADOS -->
+        <div id="resultsArea" style="display:none;" class="results">
+            <div class="card">
+                <h2>📈 ANÁLISIS Y PROBABILIDADES</h2>
+                <div id="resultsContent"></div>
+            </div>
+        </div>
+
+        <!-- HISTÓRICO -->
+        <div class="card">
+            <h2>📚 HISTÓRICO DE ANÁLISIS</h2>
+            <div id="historicoContent">
+                <p style="color:#8899aa;">Aún no hay datos guardados.</p>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-secondary" onclick="cargarHistorico()">🔄 ACTUALIZAR</button>
+                <button class="btn btn-danger" onclick="confirmarBorrarTodo()">🗑️ BORRAR TODO</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/tabs.js"></script>
+
+    <!-- Histórico -->
+    <script src="/static/js/historico/selectores.js"></script>
+    <script src="/static/js/historico/guardar.js"></script>
+    <script src="/static/js/historico/listar.js"></script>
+    <script src="/static/js/historico/ingesta_unificada.js"></script>
+
+    <!-- Pronóstico - selectores y generar -->
+    <script src="/static/js/pronostico/selectores.js"></script>
+    <script src="/static/js/pronostico/generar.js"></script>
+    <script src="/static/js/pronostico/kelly_config.js"></script> 
+
+    <!-- Pronóstico - render (secciones) -->
+    <script src="/static/js/pronostico/render/calidad.js"></script>
+    <script src="/static/js/pronostico/render/goles.js"></script>
+    <script src="/static/js/pronostico/render/corners.js"></script>
+    <script src="/static/js/pronostico/render/tarjetas.js"></script>
+    <script src="/static/js/pronostico/render/jugadores.js"></script>
+    <script src="/static/js/pronostico/render/contexto.js"></script>
+    <script src="/static/js/pronostico/render/valor.js"></script>
+    <script src="/static/js/pronostico/render/index.js"></script>
+
+    <!-- Backtesting -->
+    <script src="/static/js/backtesting/metricas.js"></script>
+    <script src="/static/js/backtesting/pronosticos.js"></script>
+    <script src="/static/js/backtesting/api_externa.js"></script> 
+
+
+    <!-- Bootstrap final (expone al window + DOMContentLoaded) -->
+    <script src="/static/js/app.js"></script>
+
+</body>
+
+</html>
