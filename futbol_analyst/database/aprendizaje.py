@@ -109,16 +109,28 @@ def _leer_todos(tipo):
 # ============================================================
 # NIVEL 1 — SESGO POR EQUIPO
 # ============================================================
-def recalcular_sesgos_equipos():
+def recalcular_sesgos_equipos(fecha_corte=None):
     """
     Recorre todos los pronósticos cerrados con lambda predicho y resultado real,
     y calcula el sesgo medio (predicho - real) por equipo y condición (local/visitante).
     Guarda el resultado en aprendizaje_modelo bajo tipo='sesgo_equipo'.
+    
+    Args:
+        fecha_corte: si se especifica ('YYYY-MM-DD'), solo usa pronósticos cerrados
+                     con fecha_cierre < fecha_corte. Evita data leakage en backtesting.
+                     Si es None, usa todos los pronósticos cerrados.
     """
     conn = _conn()
     c = conn.cursor()
     try:
-        c.execute('''
+        # ========== Filtro dinámico de fecha ==========
+        filtro_fecha = ''
+        params = []
+        if fecha_corte:
+            filtro_fecha = ' AND fecha_cierre < ?'
+            params = [fecha_corte]
+        
+        c.execute(f'''
             SELECT partido_local, partido_visitante, lambda_local_pred, lambda_visitante_pred,
                    resultado_local, resultado_visitante
             FROM pronosticos
@@ -127,7 +139,8 @@ def recalcular_sesgos_equipos():
               AND lambda_visitante_pred IS NOT NULL
               AND resultado_local IS NOT NULL
               AND resultado_visitante IS NOT NULL
-        ''')
+              {filtro_fecha}
+        ''', params)
         rows = c.fetchall()
     finally:
         conn.close()
@@ -156,12 +169,34 @@ def recalcular_sesgos_equipos():
     return {'equipos_actualizados': actualizados, 'total_pronosticos_usados': len(rows)}
 
 
-def obtener_correccion_lambda(equipo, como_local):
+def obtener_correccion_lambda(equipo, como_local, fecha_corte=None):
     """
     Devuelve el ajuste (en goles) a restar de lambda para este equipo/condición,
     ya amortiguado y listo para aplicar. 0.0 si no hay datos suficientes.
+    
+    Args:
+        equipo: nombre del equipo
+        como_local: True/False
+        fecha_corte: si se especifica, la corrección se calcula al vuelo
+                     con solo los pronósticos cerrados antes de esa fecha.
+                     Si es None, usa la corrección ya guardada en la tabla.
     """
     condicion = 'local' if como_local else 'visitante'
+    
+    # ========== Si hay fecha_corte, recalcular al vuelo ==========
+    if fecha_corte:
+        sesgos = _recalcular_sesgos_al_vuelo(fecha_corte)
+        clave = f'{equipo}|{condicion}'
+        if clave not in sesgos:
+            return 0.0
+        sesgo_data = sesgos[clave]
+        if sesgo_data['n_muestras'] < MIN_MUESTRAS_SESGO:
+            return 0.0
+        sesgo = sesgo_data['sesgo']
+        confianza = min(sesgo_data['n_muestras'] / 30.0, 1.0)
+        return sesgo * DAMPING_SESGO * confianza
+    
+    # ========== Sin fecha_corte: usar la tabla persistida ==========
     dato = _leer('sesgo_equipo', f'{equipo}|{condicion}')
     if not dato or dato['n_muestras'] < MIN_MUESTRAS_SESGO:
         return 0.0
@@ -170,18 +205,80 @@ def obtener_correccion_lambda(equipo, como_local):
     return sesgo * DAMPING_SESGO * confianza
 
 
-def aplicar_correccion_lambda(lam, equipo, como_local):
+def aplicar_correccion_lambda(lam, equipo, como_local, fecha_corte=None):
     """
     Aplica la corrección de sesgo aprendida a un lambda ya calculado.
     Nunca corrige más del CAP_SESGO_RELATIVO (20%) del valor original.
+    
+    Si fecha_corte se especifica, calcula el sesgo solo con pronósticos anteriores.
     """
-    correccion = obtener_correccion_lambda(equipo, como_local)
+    correccion = obtener_correccion_lambda(equipo, como_local, fecha_corte=fecha_corte)
     if correccion == 0.0:
         return lam
     tope = lam * CAP_SESGO_RELATIVO
     correccion = max(-tope, min(tope, correccion))
     lam_corregido = lam - correccion
     return max(0.2, min(5.0, lam_corregido))
+
+
+# ============================================================
+# CÁLCULO DE SESGOS AL VUELO (para backtesting sin leakage)
+# ============================================================
+def _recalcular_sesgos_al_vuelo(fecha_corte):
+    """
+    Calcula los sesgos de todos los equipos usando SOLO los pronósticos
+    cerrados antes de `fecha_corte`. NO persiste en la tabla.
+    
+    Returns:
+        {
+            'equipo|condicion': {
+                'sesgo': float,
+                'sesgo_bruto': float,
+                'n_muestras': int,
+            },
+            ...
+        }
+    """
+    conn = _conn()
+    c = conn.cursor()
+    try:
+        c.execute('''
+            SELECT partido_local, partido_visitante, lambda_local_pred, lambda_visitante_pred,
+                   resultado_local, resultado_visitante
+            FROM pronosticos
+            WHERE cerrado = 1
+              AND lambda_local_pred IS NOT NULL
+              AND lambda_visitante_pred IS NOT NULL
+              AND resultado_local IS NOT NULL
+              AND resultado_visitante IS NOT NULL
+              AND fecha_cierre < ?
+        ''', (fecha_corte,))
+        rows = c.fetchall()
+    finally:
+        conn.close()
+    
+    acumulado = {}
+    for r in rows:
+        acumulado.setdefault((r['partido_local'], 'local'), []).append(
+            r['lambda_local_pred'] - r['resultado_local']
+        )
+        acumulado.setdefault((r['partido_visitante'], 'visitante'), []).append(
+            r['lambda_visitante_pred'] - r['resultado_visitante']
+        )
+    
+    resultado = {}
+    for (equipo, condicion), errores in acumulado.items():
+        n = len(errores)
+        sesgo_medio = sum(errores) / n
+        sesgo_capado = max(-CAP_SESGO_GOLES, min(CAP_SESGO_GOLES, sesgo_medio))
+        clave = f'{equipo}|{condicion}'
+        resultado[clave] = {
+            'sesgo': round(sesgo_capado, 4),
+            'sesgo_bruto': round(sesgo_medio, 4),
+            'n_muestras': n,
+        }
+    
+    return resultado
 
 
 # ============================================================
@@ -210,22 +307,34 @@ def _get_path(d, path):
     return val
 
 
-def recalcular_calibracion_mercados(n_bins=10):
+def recalcular_calibracion_mercados(n_bins=10, fecha_corte=None):
     """
     Para cada mercado calibrable, agrupa las probabilidades predichas históricas
     en bins de 10% y calcula la frecuencia real observada en cada bin.
     Guarda una curva de calibración (lista de puntos) por mercado.
+    
+    Args:
+        n_bins: número de bins
+        fecha_corte: si se especifica, usa solo pronósticos cerrados antes de esa fecha.
     """
     conn = _conn()
     c = conn.cursor()
     try:
-        c.execute('''
+        # ========== Filtro dinámico ==========
+        filtro_fecha = ''
+        params = []
+        if fecha_corte:
+            filtro_fecha = ' AND fecha_cierre < ?'
+            params = [fecha_corte]
+        
+        c.execute(f'''
             SELECT pronostico_json, resultado_mercados_json
             FROM pronosticos
             WHERE cerrado = 1
               AND pronostico_json IS NOT NULL AND pronostico_json != ''
               AND resultado_mercados_json IS NOT NULL AND resultado_mercados_json != ''
-        ''')
+              {filtro_fecha}
+        ''', params)
         rows = c.fetchall()
     finally:
         conn.close()
@@ -271,11 +380,14 @@ def recalcular_calibracion_mercados(n_bins=10):
     return {'mercados_calibrados': actualizados, 'total_pronosticos_usados': len(rows)}
 
 
-def aplicar_calibracion(prob, mercado):
+def aplicar_calibracion(prob, mercado, fecha_corte=None):
     """
     Ajusta una probabilidad del modelo usando la curva de calibración aprendida
     para ese mercado (interpolación lineal). Si no hay datos suficientes,
     devuelve prob sin tocar.
+    
+    Si fecha_corte se especifica, se usa la calibración ya persistida
+    (asumimos que la tabla refleja el estado sin leakage).
     """
     if prob is None:
         return prob
@@ -336,10 +448,14 @@ def guardar_hiperparametros(valores, n_muestras):
 # ============================================================
 # RECALCULAR TODO (llamar tras cerrar cada pronóstico)
 # ============================================================
-def recalcular_aprendizaje_completo():
+def recalcular_aprendizaje_completo(fecha_corte=None):
+    """
+    Recalcula TODO el aprendizaje. Si fecha_corte se especifica,
+    usa solo pronósticos cerrados antes de esa fecha.
+    """
     init_tabla_aprendizaje()
-    r1 = recalcular_sesgos_equipos()
-    r2 = recalcular_calibracion_mercados()
+    r1 = recalcular_sesgos_equipos(fecha_corte=fecha_corte)
+    r2 = recalcular_calibracion_mercados(fecha_corte=fecha_corte)
     return {'sesgos': r1, 'calibracion': r2}
 
 

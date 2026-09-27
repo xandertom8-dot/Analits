@@ -40,16 +40,34 @@ function mostrarSeccionContexto(data) {
             <div style="background:#0a121c; padding:12px; border-radius:8px; border:1px solid #00d4ff44;">
                 <p style="color:#00d4ff; font-weight:700; margin-bottom:10px;">🏠 ${data.local}</p>
                 <table style="width:100%; font-size:0.85em; border-collapse:collapse;">
-                    <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Ataque crudo</td><td style="text-align:right; color:#8899aa;">${fmt(eqLocalM.ataque_crudo)} goles/partido</td></tr>
+                    <tr style="border-bottom:1px solid #1a2a3a;">
+                        <td style="padding:4px 0;">Ataque crudo</td>
+                        <td style="text-align:right; color:#8899aa;">
+                            ${fmt(eqLocalM.ataque_crudo)} goles/partido
+                            ${eqLocalM.ataque_fuente === 'fallback_sin_datos' 
+                                ? '<span style="color:#ff4455; font-size:0.7em; margin-left:4px;">⚠️ sin datos</span>' 
+                                : ''}
+                        </td>
+                    </tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Ataque suavizado</td><td style="text-align:right; color:#00ff88; font-weight:700;">${fmt(eqLocalM.ataque_suavizado)}</td></tr>
-                    <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Defensa rival (crudo)</td><td style="text-align:right; color:#8899aa;">${fmt(eqLocalM.defensa_cruda)} goles recibidos</td></tr>
+                    <tr style="border-bottom:1px solid #1a2a3a;">
+                        <td style="padding:4px 0;">Defensa rival (crudo)</td>
+                        <td style="text-align:right; color:#8899aa;">
+                            ${fmt(eqLocalM.defensa_cruda)} goles recibidos
+                            ${eqLocalM.defensa_fuente === 'fallback_sin_datos' 
+                                ? '<span style="color:#ff4455; font-size:0.7em; margin-left:4px;">⚠️ sin datos</span>' 
+                                : eqLocalM.defensa_fuente === 'observado_cero'
+                                ? '<span style="color:#00ff88; font-size:0.7em; margin-left:4px;">✅ clean sheets</span>'
+                                : ''}
+                        </td>
+                    </tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Defensa rival (suav.)</td><td style="text-align:right; color:#00ff88; font-weight:700;">${fmt(eqLocalM.defensa_suavizada)}</td></tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Factor localía</td><td style="text-align:right; color:#ffaa00;">×${fmt(eqLocalM.factor_localia)}</td></tr>
                     ${eqLocalM.localia_liga && eqLocalM.localia_liga.fuente === 'empirico' ? `
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0; font-size:0.9em; color:#8899aa;">↳ Localía de liga</td><td style="text-align:right; color:#00d4ff; font-size:0.9em;">×${fmt(eqLocalM.localia_liga.factor)} <span style="color:#8899aa;">(${eqLocalM.localia_liga.partidos} part.)</span></td></tr>
                     ` : ''}
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Factor racha</td><td style="text-align:right; color:${(data.rachas?.local?.factor || 1) > 1 ? '#00ff88' : ((data.rachas?.local?.factor || 1) < 1 ? '#ff4455' : '#8899aa')};">×${(data.rachas?.local?.factor || 1).toFixed(3)}</td></tr>
-                    <tr><td style="padding:4px 0;">λ (goles esperados)</td><td style="text-align:right; color:#ff8844; font-weight:700; font-size:1.1em;">${fmt(data.lambdas.visitante)}</td></tr>
+                    <tr><td style="padding:4px 0;">λ (goles esperados)</td><td style="text-align:right; color:#ff8844; font-weight:700; font-size:1.1em;">${fmt(data.lambdas.local)}</td></tr>
                 </table>
                 <!-- ========== FEATURES AVANZADAS (FE-1/FE-2) ========== -->
                 <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #1a2a3a;">
@@ -93,16 +111,34 @@ function mostrarSeccionContexto(data) {
             <div style="background:#0a121c; padding:12px; border-radius:8px; border:1px solid #ff884444;">
                 <p style="color:#ff8844; font-weight:700; margin-bottom:10px;">✈️ ${data.visitante}</p>
                 <table style="width:100%; font-size:0.85em; border-collapse:collapse;">
-                    <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Ataque crudo</td><td style="text-align:right; color:#8899aa;">${fmt(eqVisitM.ataque_crudo)} goles/partido</td></tr>
+                    <tr style="border-bottom:1px solid #1a2a3a;">
+                        <td style="padding:4px 0;">Ataque crudo</td>
+                        <td style="text-align:right; color:#8899aa;">
+                            ${fmt(eqVisitM.ataque_crudo)} goles/partido
+                            ${eqVisitM.ataque_fuente === 'fallback_sin_datos' 
+                                ? '<span style="color:#ff4455; font-size:0.7em; margin-left:4px;">⚠️ sin datos</span>' 
+                                : ''}
+                        </td>
+                    </tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Ataque suavizado</td><td style="text-align:right; color:#00ff88; font-weight:700;">${fmt(eqVisitM.ataque_suavizado)}</td></tr>
-                    <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Defensa rival (crudo)</td><td style="text-align:right; color:#8899aa;">${fmt(eqVisitM.defensa_cruda)} goles recibidos</td></tr>
+                    <tr style="border-bottom:1px solid #1a2a3a;">
+                        <td style="padding:4px 0;">Defensa rival (crudo)</td>
+                        <td style="text-align:right; color:#8899aa;">
+                            ${fmt(eqVisitM.defensa_cruda)} goles recibidos
+                            ${eqVisitM.defensa_fuente === 'fallback_sin_datos' 
+                                ? '<span style="color:#ff4455; font-size:0.7em; margin-left:4px;">⚠️ sin datos</span>' 
+                                : eqVisitM.defensa_fuente === 'observado_cero'
+                                ? '<span style="color:#00ff88; font-size:0.7em; margin-left:4px;">✅ clean sheets</span>'
+                                : ''}
+                        </td>
+                    </tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Defensa rival (suav.)</td><td style="text-align:right; color:#00ff88; font-weight:700;">${fmt(eqVisitM.defensa_suavizada)}</td></tr>
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Factor localía</td><td style="text-align:right; color:#ffaa00;">×${fmt(eqVisitM.factor_localia)}</td></tr>
                     ${eqVisitM.localia_liga && eqVisitM.localia_liga.fuente === 'empirico' ? `
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0; font-size:0.9em; color:#8899aa;">↳ Localía de liga</td><td style="text-align:right; color:#00d4ff; font-size:0.9em;">×${fmt(eqVisitM.localia_liga.factor)} <span style="color:#8899aa;">(${eqVisitM.localia_liga.partidos} part.)</span></td></tr>
                     ` : ''}
                     <tr style="border-bottom:1px solid #1a2a3a;"><td style="padding:4px 0;">Factor racha</td><td style="text-align:right; color:${(data.rachas?.visitante?.factor || 1) > 1 ? '#00ff88' : ((data.rachas?.visitante?.factor || 1) < 1 ? '#ff4455' : '#8899aa')};">×${(data.rachas?.visitante?.factor || 1).toFixed(3)}</td></tr>
-                    <tr><td style="padding:4px 0;">λ (goles esperados)</td><td style="text-align:right; color:#00d4ff; font-weight:700; font-size:1.1em;">${fmt(data.lambdas.local)}</td></tr>
+                    <tr><td style="padding:4px 0;">λ (goles esperados)</td><td style="text-align:right; color:#00d4ff; font-weight:700; font-size:1.1em;">${fmt(data.lambdas.visitante)}</td></tr>
                 </table>
                 <!-- ========== FEATURES AVANZADAS (FE-1/FE-2) ========== -->
                 <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #1a2a3a;">
@@ -147,6 +183,11 @@ function mostrarSeccionContexto(data) {
         <div style="margin-top:12px; padding:10px; background:#0a121c; border-radius:6px; border:1px solid #1a2a3a; text-align:center;">
             <span style="color:#8899aa; font-size:0.85em;">
                 Promedio de liga: <strong style="color:#e0e0e0;">${fmt(eqLocalM.promedio_liga)} goles</strong>
+                ${eqLocalM.promedio_liga_fuente === 'observado' 
+                    ? `<span style="color:#00ff88; font-size:0.75em;">(observado · ${eqLocalM.promedio_liga_partidos || 0} part.)</span>` 
+                    : eqLocalM.promedio_liga_fuente === 'estimado'
+                    ? `<span style="color:#ffaa00; font-size:0.75em;">(estimado · ${eqLocalM.promedio_liga_partidos || 0} part.)</span>`
+                    : `<span style="color:#ff4455; font-size:0.75em;">(fallback · sin datos)</span>`}
                 · Fórmula: <strong style="color:#00d4ff;">λ = (ataque_suav × defensa_suav) / prom_liga × localía</strong>
             </span>
         </div>

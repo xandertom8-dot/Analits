@@ -37,7 +37,7 @@ bp_pronostico = Blueprint('pronostico', __name__)
 # ============================================================
 # PRONÓSTICO COMPLETO
 # ============================================================
-def pronosticar_partido(local, visitante, liga_pronostico=None):
+def pronosticar_partido(local, visitante, liga_pronostico=None, fecha_corte=None):
     """
     Genera un pronóstico usando el motor estadístico v2.0
     - Poisson para goles
@@ -47,8 +47,8 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
     - Nivel de confianza
     """
     # ========== 1. Calcular λ para cada equipo ==========
-    resultado_local = calcular_lambda_poisson(local, visitante, como_local=True, liga_pronostico=liga_pronostico)
-    resultado_visit = calcular_lambda_poisson(visitante, local, como_local=False, liga_pronostico=liga_pronostico)
+    resultado_local = calcular_lambda_poisson(local, visitante, como_local=True, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
+    resultado_visit = calcular_lambda_poisson(visitante, local, como_local=False, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
 
     errores = []
     if resultado_local.get('error'):
@@ -72,24 +72,42 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
         decidir_modelo, obtener_partidos_historicos,
         estimar_rho_dixon_coles,
     )
-    partidos_local_full = obtener_partidos_historicos(local, como_local=None, liga_pronostico=liga_pronostico, limite=15)
-    partidos_visit_full = obtener_partidos_historicos(visitante, como_local=None, liga_pronostico=liga_pronostico, limite=15)
+    partidos_local_full = obtener_partidos_historicos(local, como_local=None, liga_pronostico=liga_pronostico, limite=15, fecha_corte=fecha_corte)
+    partidos_visit_full = obtener_partidos_historicos(visitante, como_local=None, liga_pronostico=liga_pronostico, limite=15, fecha_corte=fecha_corte)
     
+    # ========== Importar modificador_activo ==========
+    from database.motor_estadistico import modificador_activo
+    
+    # ========== 2. Decidir modelo ==========
     decision_modelo = decidir_modelo(partidos_local_full, partidos_visit_full)
     
     # ========== 2b. Estimar rho Dixon-Coles ==========
-    rho_info = estimar_rho_dixon_coles(liga=liga_pronostico)
-    rho = rho_info['rho']
+    if modificador_activo('dixon_coles'):
+        rho_info = estimar_rho_dixon_coles(liga=liga_pronostico, fecha_corte=fecha_corte)
+        rho = rho_info['rho']
+    else:
+        rho_info = {'rho': 0.0, 'partidos': 0, 'fuente': 'desactivado', 'log_likelihood': None}
+        rho = 0.0
     
     # ========== 3. Calcular mercados ==========
+    usar_negbin = modificador_activo('negbin') and (decision_modelo['modelo'] == 'negbin')
+    
     mercados = calcular_mercados_poisson(
         lambda_local,
         lambda_visit,
-        usar_negbin=(decision_modelo['modelo'] == 'negbin'),
+        usar_negbin=usar_negbin,
         alpha_local=decision_modelo['alpha_local'],
         alpha_visitante=decision_modelo['alpha_visitante'],
         rho_dixon_coles=rho,
     )
+    
+        # ========== Logging para auditoría de modificadores ==========
+    import os
+    if os.environ.get('AUDITORIA_MODIFICADORES') == '1':
+        if usar_negbin:
+            print(f"[NEGBIN ON] {local} vs {visitante} | α_local={decision_modelo['alpha_local']:.3f} α_visit={decision_modelo['alpha_visitante']:.3f}")
+        if rho != 0:
+            print(f"[DIXON-COLES ON] {local} vs {visitante} | ρ={rho:.3f}")
     
     # Añadir info del modelo a la respuesta (sin exponerlo en UI)
     mercados['_decision_modelo'] = decision_modelo
@@ -103,8 +121,8 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
     print(f"         ρ={rho_info['rho']} ({rho_info['fuente']}, {rho_info['partidos']} part.)")
 
     # ========== MERCADOS DE CÓRNERS ==========
-    corners_local = calcular_lambda_corners(local, visitante, como_local=True, liga_pronostico=liga_pronostico)
-    corners_visit = calcular_lambda_corners(visitante, local, como_local=False, liga_pronostico=liga_pronostico)
+    corners_local = calcular_lambda_corners(local, visitante, como_local=True, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
+    corners_visit = calcular_lambda_corners(visitante, local, como_local=False, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
 
     mercados_corners = None
     if not corners_local.get('error') and not corners_visit.get('error'):
@@ -118,8 +136,8 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
         }
 
     # ========== MERCADOS DE TARJETAS ==========
-    tarjetas_local = calcular_lambda_tarjetas(local, visitante, como_local=True, liga_pronostico=liga_pronostico)
-    tarjetas_visit = calcular_lambda_tarjetas(visitante, local, como_local=False, liga_pronostico=liga_pronostico)
+    tarjetas_local = calcular_lambda_tarjetas(local, visitante, como_local=True, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
+    tarjetas_visit = calcular_lambda_tarjetas(visitante, local, como_local=False, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
 
     mercados_tarjetas = None
     if not tarjetas_local.get('error') and not tarjetas_visit.get('error'):
@@ -134,10 +152,10 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
 
     # ========== DISTRIBUCIONES Y HIT RATES ==========
     dist_local = calcular_distribucion_equipo(
-        local, liga_pronostico=liga_pronostico, como_local=True, limite=15
+        local, liga_pronostico=liga_pronostico, como_local=True, limite=15, fecha_corte=fecha_corte
     )
     dist_visit = calcular_distribucion_equipo(
-        visitante, liga_pronostico=liga_pronostico, como_local=False, limite=15
+        visitante, liga_pronostico=liga_pronostico, como_local=False, limite=15, fecha_corte=fecha_corte
     )
 
     # ========== DETECCIÓN DE ANOMALÍAS ==========
@@ -150,7 +168,7 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
     )
 
     # ========== 3. H2H ==========
-    h2h = obtener_h2h(local, visitante, limite=10)
+    h2h = obtener_h2h(local, visitante, limite=10, fecha_corte=fecha_corte)
 
     # ========== 4. Confianza ==========
     tiene_tendencia = (
@@ -159,14 +177,14 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
     )
 
     # ========== 4.1 Sample Quality Score ==========
-    sqs_local = calcular_sample_quality_score(local, liga_pronostico, como_local=True)
-    sqs_visit = calcular_sample_quality_score(visitante, liga_pronostico, como_local=False)
+    sqs_local = calcular_sample_quality_score(local, liga_pronostico, como_local=True, fecha_corte=fecha_corte)
+    sqs_visit = calcular_sample_quality_score(visitante, liga_pronostico, como_local=False, fecha_corte=fecha_corte)
 
     sqs_global = round((sqs_local['score'] + sqs_visit['score']) / 2)
 
     # ========== 4.2 Intervalos de confianza ==========
-    n_ef_local = calcular_n_efectivo_por_condicion(local, como_local=True, liga_pronostico=liga_pronostico)
-    n_ef_visit = calcular_n_efectivo_por_condicion(visitante, como_local=False, liga_pronostico=liga_pronostico)
+    n_ef_local = calcular_n_efectivo_por_condicion(local, como_local=True, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
+    n_ef_visit = calcular_n_efectivo_por_condicion(visitante, como_local=False, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
 
     n_efectivo = min(n_ef_local['n_efectivo_total'], n_ef_visit['n_efectivo_total'])
 
@@ -207,7 +225,7 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
     )
 
     # ========== 5. Jugadores ==========
-    goleadores_local = obtener_top_jugadores_probabilidades(local, 'goleadores', 5, liga_pronostico)
+    goleadores_local = obtener_top_jugadores_probabilidades(local, 'goleadores', 5, liga_pronostico, fecha_corte=fecha_corte)
     goleadores_visit = obtener_top_jugadores_probabilidades(visitante, 'goleadores', 5, liga_pronostico)
     tiros_local = obtener_top_jugadores_probabilidades(local, 'tiros', 5, liga_pronostico)
     tiros_visit = obtener_top_jugadores_probabilidades(visitante, 'tiros', 5, liga_pronostico)
@@ -252,6 +270,11 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
                 'defensa_suavizada': resultado_local.get('defensa_suavizada'),
                 'factor_suavizado_k': resultado_local.get('factor_suavizado_k', 5.0),
                 'promedio_liga': resultado_local.get('promedio_liga'),
+                'promedio_liga_fuente': resultado_local.get('promedio_liga_fuente'),  # ← NUEVO
+                'promedio_liga_partidos': resultado_local.get('promedio_liga_partidos'),  # ← NUEVO
+                'factor_fuente': resultado_local.get('factor_fuente'),  # ← NUEVO
+                'ataque_fuente': resultado_local.get('ataque_fuente'),  # ← NUEVO
+                'defensa_fuente': resultado_local.get('defensa_fuente'),  # ← NUEVO
                 'cobertura_promedio': resultado_local.get('cobertura_promedio', 0),
                 'cobertura_campos': stats_local.get('cobertura', {}) if stats_local else {},
                 'contexto': resultado_local.get('contexto'),
@@ -282,6 +305,11 @@ def pronosticar_partido(local, visitante, liga_pronostico=None):
                 'defensa_suavizada': resultado_visit.get('defensa_suavizada'),
                 'factor_suavizado_k': resultado_visit.get('factor_suavizado_k', 5.0),
                 'promedio_liga': resultado_visit.get('promedio_liga'),
+                'promedio_liga_fuente': resultado_visit.get('promedio_liga_fuente'),  # ← NUEVO
+                'promedio_liga_partidos': resultado_visit.get('promedio_liga_partidos'),  # ← NUEVO
+                'factor_fuente': resultado_visit.get('factor_fuente'),  # ← NUEVO
+                'ataque_fuente': resultado_visit.get('ataque_fuente'),  # ← NUEVO
+                'defensa_fuente': resultado_visit.get('defensa_fuente'),  # ← NUEVO
                 'cobertura_promedio': resultado_visit.get('cobertura_promedio', 0),
                 'cobertura_campos': stats_visit.get('cobertura', {}) if stats_visit else {},
                 'contexto': resultado_visit.get('contexto'),
@@ -355,6 +383,9 @@ def pronosticar():
     visitante = data.get('visitante', '')
     cuota = data.get('cuota', 0)
     liga = data.get('liga', '')
+    
+    # ========== NUEVO: fecha_corte opcional para backtesting ==========
+    fecha_corte = data.get('fecha_corte', None)  # formato 'YYYY-MM-DD' o None
 
     # ========== NUEVO: bankroll + stake mínimo para Kelly ==========
     try:
@@ -377,7 +408,7 @@ def pronosticar():
     local_norm = normalizar_equipo(local)
     visitante_norm = normalizar_equipo(visitante)
 
-    pronostico = pronosticar_partido(local_norm, visitante_norm, liga_pronostico=liga)
+    pronostico = pronosticar_partido(local_norm, visitante_norm, liga_pronostico=liga, fecha_corte=fecha_corte)
 
     if pronostico.get('error'):
         return jsonify(pronostico)
@@ -618,6 +649,7 @@ def pronosticar():
     # Añadir bankroll usado a la respuesta (para que el frontend lo sepa)
     pronostico['bankroll_usado'] = bankroll
     pronostico['stake_minimo_usado'] = stake_minimo
+    pronostico['fecha_corte_usada'] = fecha_corte  # ← NUEVO
 
     return jsonify(pronostico)
 
@@ -625,7 +657,7 @@ def pronosticar():
 # ============================================================
 # ENDPOINT /pronosticar-por-id
 # ============================================================
-def pronosticar_partido_por_id(local_id, visitante_id, liga_pronostico=None):
+def pronosticar_partido_por_id(local_id, visitante_id, liga_pronostico=None, fecha_corte=None):
     """
     Versión por ID de pronosticar_partido().
     Internamente convierte IDs a nombres y usa la función existente.
@@ -640,7 +672,7 @@ def pronosticar_partido_por_id(local_id, visitante_id, liga_pronostico=None):
     if not visitante:
         return {'error': f'Equipo con ID {visitante_id} no encontrado'}
 
-    return pronosticar_partido(local, visitante, liga_pronostico=liga_pronostico)
+    return pronosticar_partido(local, visitante, liga_pronostico=liga_pronostico, fecha_corte=fecha_corte)
 
 
 @bp_pronostico.route('/pronosticar-por-id', methods=['POST'])
@@ -655,9 +687,82 @@ def pronosticar_por_id():
     if not local_id or not visitante_id:
         return jsonify({'error': 'Selecciona ambos equipos'})
 
-    pronostico = pronosticar_partido_por_id(local_id, visitante_id, liga_pronostico=liga)
+    fecha_corte = data.get('fecha_corte', None)
+    pronostico = pronosticar_partido_por_id(local_id, visitante_id, liga_pronostico=liga, fecha_corte=fecha_corte)
 
     if pronostico.get('error'):
         return jsonify(pronostico)
 
     return jsonify(pronostico)
+
+# ============================================================
+# AUDITORÍA DE MODIFICADORES (FASE A)
+# ============================================================
+@bp_pronostico.route('/api/auditoria/modificadores', methods=['GET'])
+def api_auditoria_modificadores():
+    """Devuelve el estado de todos los modificadores del motor."""
+    from database.motor_estadistico import (
+        MODIFICADORES_ACTIVOS,
+        FACTOR_DECAY,
+        FACTOR_SUAVIZADO,
+        FACTOR_LOCALIA_GENERICO_LOCAL,
+        FACTOR_LOCALIA_GENERICO_VISITANTE,
+        AJUSTE_RACHA_MAX,
+        PESO_COMPETICION,
+        AJUSTE_RIVAL_MIN,
+        AJUSTE_RIVAL_MAX,
+        VERSION_MOTOR,
+    )
+    
+    return jsonify({
+        'version_motor': VERSION_MOTOR,
+        'modificadores': MODIFICADORES_ACTIVOS,
+        'parametros': {
+            'factor_decay': FACTOR_DECAY,
+            'factor_suavizado': FACTOR_SUAVIZADO,
+            'factor_localia_local': FACTOR_LOCALIA_GENERICO_LOCAL,
+            'factor_localia_visitante': FACTOR_LOCALIA_GENERICO_VISITANTE,
+            'ajuste_racha_max': AJUSTE_RACHA_MAX,
+            'peso_competicion': PESO_COMPETICION,
+            'ajuste_rival_min': AJUSTE_RIVAL_MIN,
+            'ajuste_rival_max': AJUSTE_RIVAL_MAX,
+        },
+        'resumen': {
+            'total_modificadores': len(MODIFICADORES_ACTIVOS),
+            'activos': sum(1 for v in MODIFICADORES_ACTIVOS.values() if v),
+            'inactivos': sum(1 for v in MODIFICADORES_ACTIVOS.values() if not v),
+        }
+    })
+
+
+@bp_pronostico.route('/api/auditoria/toggle', methods=['POST'])
+def api_auditoria_toggle():
+    """
+    Activa/desactiva un modificador.
+    
+    Body:
+        {"nombre": "ratio", "activo": false}
+    """
+    from database.motor_estadistico import set_modificador
+    
+    data = request.json or {}
+    nombre = data.get('nombre')
+    activo = data.get('activo', True)
+    
+    if not nombre:
+        return jsonify({'error': 'Falta "nombre"'})
+    
+    exito = set_modificador(nombre, activo)
+    
+    if not exito:
+        return jsonify({'error': f'Modificador desconocido: {nombre}'}), 400
+    
+    return jsonify({'success': True, 'nombre': nombre, 'activo': activo})
+
+
+@bp_pronostico.route('/api/auditoria/reset', methods=['POST'])
+def api_auditoria_reset():
+    """Restaura todos los modificadores a True."""
+    from database.motor_estadistico import reset_modificadores
+    reset_modificadores()
+    return jsonify({'success': True, 'mensaje': 'Todos los modificadores activados'})

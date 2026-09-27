@@ -14,6 +14,58 @@ Incluye:
 ============================================================
 """
 
+# ============================================================
+# MODIFICADORES ACTIVOS DEL MOTOR (FASE A)
+# ============================================================
+# Cada modificador puede activarse/desactivarse sin tocar código.
+# Esto permite backtesting A/B para medir si cada uno aporta valor.
+#
+# Categorías:
+#   - Modifican λ: cambian el resultado de la predicción.
+#   - Contexto: solo informan, NO modifican λ.
+# ============================================================
+
+MODIFICADORES_ACTIVOS = {
+    # ===== Modificadores que afectan a λ =====
+    'decay':              True,   # Ponderación exponencial por recencia (0.85^n)
+    'suavizado':          True,   # Shrinkage hacia promedio de liga (k=5)
+    'localia_generica':   True,   # 1.15 / 0.90 por defecto
+    'localia_empirica':   True,   # Localía calculada del equipo
+    'localia_liga':       True,   # Localía calculada de la liga
+    'tendencia':          True,   # Subiendo/bajando/estable
+    'racha':              True,   # Racha larga (5+ partidos)
+    'racha_v2':           True,   # Racha últimos 3 partidos
+    'ratio':              True,   # Ratio ataque/defensa
+    'diferencial':        True,   # Diferencial de goles
+    'peso_competicion':   True,   # Peso por tipo de competición
+    'peso_rival':         False,  # ⚠️ Desactivado por FASE A (Δ MAE = -0.0142)
+    'negbin':             True,   # NegBin si overdispersion
+    'dixon_coles':        True,   # Corrección de marcadores bajos
+    'aprendizaje_sesgo':  True,   # Corrección por sesgo aprendido
+    
+    # ===== Modificadores que NO afectan a λ (solo contexto) =====
+    'contexto':           True,   # clean sheets, failed to score, CV
+}
+
+
+def modificador_activo(nombre):
+    """Comprueba si un modificador está activo. Default: True."""
+    return MODIFICADORES_ACTIVOS.get(nombre, True)
+
+
+def set_modificador(nombre, activo):
+    """Activa/desactiva un modificador en runtime (no persiste)."""
+    if nombre in MODIFICADORES_ACTIVOS:
+        MODIFICADORES_ACTIVOS[nombre] = bool(activo)
+        return True
+    return False
+
+
+def reset_modificadores():
+    """Restaura todos los modificadores a True."""
+    for k in MODIFICADORES_ACTIVOS:
+        MODIFICADORES_ACTIVOS[k] = True
+
 from collections import defaultdict
 import sqlite3
 import os
@@ -217,7 +269,7 @@ def _calcular_factor_diferencial(stats_equipo):
     return round(factor, 4), round(diff, 3)
 
 
-def _calcular_factor_racha_v2(equipo, liga_pronostico=None, como_local=None):
+def _calcular_factor_racha_v2(equipo, liga_pronostico=None, como_local=None, fecha_corte=None):
     """
     Factor de racha reciente mejorada.
 
@@ -230,7 +282,8 @@ def _calcular_factor_racha_v2(equipo, liga_pronostico=None, como_local=None):
     """
     # Obtener últimos 5 partidos (para tener margen)
     partidos = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=5
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=5,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos) < 3:
@@ -409,22 +462,37 @@ def calcular_contexto_features(partidos, stats_equipo=None):
 # OBTENER PARTIDOS HISTÓRICOS
 # ============================================================
 def obtener_partidos_historicos(
-    equipo, como_local=None, liga_pronostico=None, limite=30
+    equipo, como_local=None, liga_pronostico=None, limite=30, fecha_corte=None
 ):
     """
     Obtiene los partidos históricos de un equipo con estadísticas propias Y del rival.
+    
+    Args:
+        equipo: nombre del equipo
+        como_local: None (ambos) | True (solo local) | False (solo visitante)
+        liga_pronostico: liga de contexto
+        limite: máximo de partidos a devolver
+        fecha_corte: si se especifica (formato 'YYYY-MM-DD'), solo devuelve partidos
+                     con fecha < fecha_corte. Útil para backtesting sin data leakage.
+                     Si es None, comportamiento actual (sin filtro).
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
     partidos = []
+    # ========== Construir filtro dinámico de fecha ==========
+    filtro_fecha = ''
+    params_fecha = []
+    if fecha_corte:
+        filtro_fecha = ' AND p.fecha < ?'
+        params_fecha = [fecha_corte]
 
     try:
         # ===== Como LOCAL =====
         if como_local is None or como_local is True:
             c.execute(
-                """
+                f"""
                 SELECT 
                     p.id, p.fecha, p.liga, p.temporada,
                     p.local as equipo, p.visitante as rival,
@@ -443,30 +511,30 @@ def obtener_partidos_historicos(
                     SUM(el.E) as entradas,
                     SUM(el.O) as fueras_juego,
                     SUM(el.BS) as tiros_bloqueados,
-                    MAX(el.rival_G) as rival_goles,
-                    MAX(el.rival_S) as rival_tiros,
-                    MAX(el.rival_SOnT) as rival_tiros_puerta,
-                    MAX(el.rival_Crn) as rival_corners,
-                    MAX(el.rival_FC) as rival_faltas,
-                    MAX(el.rival_FR) as rival_faltas_recibidas,
-                    MAX(el.rival_SAV) as rival_paradas,
-                    MAX(el.rival_TA) as rival_tarjetas_amarillas,
-                    MAX(el.rival_TR) as rival_tarjetas_rojas,
-                    MAX(el.rival_P) as rival_pases,
-                    MAX(el.rival_C) as rival_centros,
-                    MAX(el.rival_E) as rival_entradas,
-                    MAX(el.rival_O) as rival_fueras_juego,
-                    MAX(el.rival_BS) as rival_tiros_bloqueados,
+                    (SELECT COALESCE(SUM(G), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_goles,
+                    (SELECT COALESCE(SUM(S), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_tiros,
+                    (SELECT COALESCE(SUM(SOnT), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_tiros_puerta,
+                    (SELECT COALESCE(SUM(Crn), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_corners,
+                    (SELECT COALESCE(SUM(FC), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_faltas,
+                    (SELECT COALESCE(SUM(FR), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_faltas_recibidas,
+                    (SELECT COALESCE(SUM(SAV), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_paradas,
+                    (SELECT COALESCE(SUM(TA), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_tarjetas_amarillas,
+                    (SELECT COALESCE(SUM(TR), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_tarjetas_rojas,
+                    (SELECT COALESCE(SUM(P), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_pases,
+                    (SELECT COALESCE(SUM(C), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_centros,
+                    (SELECT COALESCE(SUM(E), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_entradas,
+                    (SELECT COALESCE(SUM(O), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_fueras_juego,
+                    (SELECT COALESCE(SUM(BS), 0) FROM estadisticas_visitante WHERE partido_id = p.id) as rival_tiros_bloqueados,
                     COALESCE(p.og_local, 0) as og_propio,
                     COALESCE(p.og_visitante, 0) as og_rival
                 FROM partidos p
                 JOIN estadisticas_local el ON el.partido_id = p.id
-                WHERE p.local = ?
+                WHERE p.local = ?{filtro_fecha}
                 GROUP BY p.id
                 ORDER BY p.fecha DESC
                 LIMIT ?
             """,
-                (equipo, limite),
+                [equipo] + params_fecha + [limite],
             )
             for row in c.fetchall():
                 partidos.append(dict(row))
@@ -474,7 +542,7 @@ def obtener_partidos_historicos(
         # ===== Como VISITANTE =====
         if como_local is None or como_local is False:
             c.execute(
-                """
+                f"""
                 SELECT 
                     p.id, p.fecha, p.liga, p.temporada,
                     p.visitante as equipo, p.local as rival,
@@ -493,30 +561,30 @@ def obtener_partidos_historicos(
                     SUM(ev.E) as entradas,
                     SUM(ev.O) as fueras_juego,
                     SUM(ev.BS) as tiros_bloqueados,
-                    MAX(ev.rival_G) as rival_goles,
-                    MAX(ev.rival_S) as rival_tiros,
-                    MAX(ev.rival_SOnT) as rival_tiros_puerta,
-                    MAX(ev.rival_Crn) as rival_corners,
-                    MAX(ev.rival_FC) as rival_faltas,
-                    MAX(ev.rival_FR) as rival_faltas_recibidas,
-                    MAX(ev.rival_SAV) as rival_paradas,
-                    MAX(ev.rival_TA) as rival_tarjetas_amarillas,
-                    MAX(ev.rival_TR) as rival_tarjetas_rojas,
-                    MAX(ev.rival_P) as rival_pases,
-                    MAX(ev.rival_C) as rival_centros,
-                    MAX(ev.rival_E) as rival_entradas,
-                    MAX(ev.rival_O) as rival_fueras_juego,
-                    MAX(ev.rival_BS) as rival_tiros_bloqueados,
+                    (SELECT COALESCE(SUM(G), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_goles,
+                    (SELECT COALESCE(SUM(S), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_tiros,
+                    (SELECT COALESCE(SUM(SOnT), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_tiros_puerta,
+                    (SELECT COALESCE(SUM(Crn), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_corners,
+                    (SELECT COALESCE(SUM(FC), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_faltas,
+                    (SELECT COALESCE(SUM(FR), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_faltas_recibidas,
+                    (SELECT COALESCE(SUM(SAV), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_paradas,
+                    (SELECT COALESCE(SUM(TA), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_tarjetas_amarillas,
+                    (SELECT COALESCE(SUM(TR), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_tarjetas_rojas,
+                    (SELECT COALESCE(SUM(P), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_pases,
+                    (SELECT COALESCE(SUM(C), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_centros,
+                    (SELECT COALESCE(SUM(E), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_entradas,
+                    (SELECT COALESCE(SUM(O), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_fueras_juego,
+                    (SELECT COALESCE(SUM(BS), 0) FROM estadisticas_local WHERE partido_id = p.id) as rival_tiros_bloqueados,
                     COALESCE(p.og_visitante, 0) as og_propio,
                     COALESCE(p.og_local, 0) as og_rival
                 FROM partidos p
                 JOIN estadisticas_visitante ev ON ev.partido_id = p.id
-                WHERE p.visitante = ?
+                WHERE p.visitante = ?{filtro_fecha}
                 GROUP BY p.id
                 ORDER BY p.fecha DESC
                 LIMIT ?
             """,
-                (equipo, limite),
+                [equipo] + params_fecha + [limite],
             )
             for row in c.fetchall():
                 partidos.append(dict(row))
@@ -659,7 +727,7 @@ def _calcular_ajuste_por_rival(rival, liga_pronostico=None):
 _CACHE_LOCALIA_LIGA = {}
 
 
-def calcular_localia_liga(liga, temporada=None, min_partidos=20):
+def calcular_localia_liga(liga, temporada=None, min_partidos=20, fecha_corte=None):
     """
     Calcula el factor de localía empírico de una liga.
 
@@ -681,7 +749,7 @@ def calcular_localia_liga(liga, temporada=None, min_partidos=20):
         }
     """
     # ========== Cache ==========
-    cache_key = f"{liga}|{temporada or 'all'}"
+    cache_key = f"{liga}|{temporada or 'all'}|{fecha_corte or 'all'}"
     if cache_key in _CACHE_LOCALIA_LIGA:
         return _CACHE_LOCALIA_LIGA[cache_key]
 
@@ -704,12 +772,19 @@ def calcular_localia_liga(liga, temporada=None, min_partidos=20):
 
     try:
         # Filtrar por liga y temporada (si aplica)
+        condiciones = ["liga = ?"]
+        params = [liga]
+
         if temporada:
-            filtro = "WHERE liga = ? AND temporada = ?"
-            params = (liga, temporada)
-        else:
-            filtro = "WHERE liga = ?"
-            params = (liga,)
+            condiciones.append("temporada = ?")
+            params.append(temporada)
+
+        if fecha_corte:
+            condiciones.append("fecha < ?")
+            params.append(fecha_corte)
+
+        filtro = "WHERE " + " AND ".join(condiciones)
+        params = tuple(params)
 
         # Contar partidos
         c.execute(f"SELECT COUNT(*) FROM partidos {filtro}", params)
@@ -778,7 +853,7 @@ def calcular_localia_liga(liga, temporada=None, min_partidos=20):
         conn.close()
 
 
-def _calcular_factor_localia(equipo, como_local, liga_pronostico=None):
+def _calcular_factor_localia(equipo, como_local, liga_pronostico=None, fecha_corte=None,usar_generica=True, usar_empirica=True, usar_liga=True):
     """
     Calcula el factor de localía combinando:
     1. Empírico del equipo (sus propios partidos como local/visitante)
@@ -793,22 +868,20 @@ def _calcular_factor_localia(equipo, como_local, liga_pronostico=None):
     Returns:
         float: factor de localía
     """
-    # ========== 1. Factor genérico de fallback ==========
+    # ========== 1. Factor genérico ==========
     factor_generico = (
         FACTOR_LOCALIA_GENERICO_LOCAL
         if como_local
         else FACTOR_LOCALIA_GENERICO_VISITANTE
-    )
+    ) if usar_generica else 1.0
 
     # ========== 2. Factor de liga ==========
-    liga_info = (
-        calcular_localia_liga(liga_pronostico)
-        if liga_pronostico
-        else {
-            "factor": FACTOR_LOCALIA_GENERICO_LOCAL,
-            "fuente": "generico",
-        }
-    )
+    if usar_liga and liga_pronostico:
+        liga_info = calcular_localia_liga(liga_pronostico)
+    else:
+        liga_info = {"factor": 1.0, "fuente": "desactivado", "partidos": 0}
+    
+    # ... resto de la función, respetando `usar_empirica` cuando toque
 
     # El factor de liga mide ventaja local. Para el visitante, aplicamos el inverso.
     if como_local:
@@ -828,11 +901,13 @@ def _calcular_factor_localia(equipo, como_local, liga_pronostico=None):
 
     # ========== 3. Factor empírico del equipo ==========
     partidos_condicion = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     partidos_general = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     n_condicion = len(partidos_condicion)
@@ -946,14 +1021,14 @@ def calcular_estadisticas_ponderadas(partidos, liga_pronostico=None):
 
     for i, p in enumerate(partidos):
         # Peso por posición (más reciente = más peso)
-        peso_pos = FACTOR_DECAY**i
+        peso_pos = FACTOR_DECAY**i if modificador_activo('decay') else 1.0
 
         # Peso por competición
-        peso_comp = p.get("peso_competicion", 1.0)
+        peso_comp = p.get("peso_competicion", 1.0) if modificador_activo('peso_competicion') else 1.0
 
-        # ✅ NUEVO: Peso por fuerza del rival
+        # Peso por fuerza del rival
         rival = p.get("rival")
-        if rival:
+        if rival and modificador_activo('peso_rival'):
             if rival not in cache_rival:
                 cache_rival[rival] = _calcular_ajuste_por_rival(rival, liga_pronostico)
             peso_rival = cache_rival[rival]
@@ -1207,23 +1282,29 @@ def obtener_jugadores_activos(equipo, como_local=None, ultimos_n=5):
 # ============================================================
 # CÁLCULO DE LAMBDA (Poisson)
 # ============================================================
-def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
+def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None, fecha_corte=None):
     """
     Calcula λ (goles esperados) usando ATAQUE vs DEFENSA real
     CON suavizado (shrinkage) y ponderación por fuerza del rival.
-
-    Fórmula:
-        λ = (ataque_suav × defensa_suav) / promedio_liga
-            × factor_localia × factor_tendencia
+    ...
     """
+    # ========== BLINDAJE: variables por defecto ==========
+    prom_liga_fuente = 'fallback'
+    prom_liga_partidos = 0
+    factor_fuente = 1.00
+    ataque_fuente = 'fallback_sin_datos'
+    defensa_fuente = 'fallback_sin_datos'
+    
     # ========== 0. Calcular ventanas múltiples ==========
+    
     ventanas_info = calcular_stats_multiples_ventanas(
-        equipo, liga_pronostico, como_local
+        equipo, liga_pronostico, como_local, fecha_corte=fecha_corte
     )
 
     # ========== 1. Partidos del equipo y rival ==========
     partidos_equipo = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_equipo) < MIN_PARTIDOS_BAJO:
@@ -1234,7 +1315,8 @@ def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
         }
 
     partidos_rival = obtener_partidos_historicos(
-        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_rival) < MIN_PARTIDOS_BAJO:
@@ -1259,19 +1341,33 @@ def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
     if liga_principal:
         promedios_liga = calcular_promedios_liga(liga_principal)
 
+    # ⚠️ BUG FIX (BLOQUE 1): distinguir observado vs estimado vs fallback
+    FALLBACK_GOLES_LIGA = 1.4
+    UMBRAL_OBSERVADO = 20  # mínimo de partidos para considerar "observado"
+
     if not promedios_liga:
-        prom_goles_liga = 1.4
+        prom_goles_liga = FALLBACK_GOLES_LIGA
+        prom_liga_fuente = 'fallback'
+        prom_liga_partidos = 0
     else:
         prom_goles_liga = promedios_liga["goles"]["media"]
-
+        prom_liga_partidos = promedios_liga.get("partidos", 0)
+        if prom_liga_partidos >= UMBRAL_OBSERVADO:
+            prom_liga_fuente = 'observado'
+        else:
+            prom_liga_fuente = 'estimado'
+            
     # ========== 4. Ataque propio (con suavizado) ==========
     goles_propios = stats_equipo.get("goles")
     if goles_propios is None:
         goles_propios = prom_goles_liga
-
+        ataque_fuente = 'fallback_sin_datos'
+    else:
+        ataque_fuente = 'observado'
     # Ajustar por condición (local/visitante)
     partidos_condicion = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=10
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=10,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_condicion) >= 3:
@@ -1284,40 +1380,68 @@ def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
             goles_propios = 0.6 * goles_condicion + 0.4 * goles_propios
 
     # ========== Ajuste por racha ==========
-    racha_equipo = detectar_racha(equipo, liga_pronostico)
-    factor_racha = racha_equipo["factor"]
+    if modificador_activo('racha'):
+        racha_equipo = detectar_racha(equipo, liga_pronostico, fecha_corte=fecha_corte)
+        factor_racha = racha_equipo["factor"]
+    else:
+        racha_equipo = {'tipo': 'desactivado', 'longitud': 0, 'factor': 1.0, 'descripcion': ''}
+        factor_racha = 1.0
 
     ataque_crudo = goles_propios * factor_racha
 
     # ✅ SUAVIZADO (shrinkage) del ataque
     n_partidos = len(partidos_equipo)
-    ataque_suavizado = (
-        n_partidos * ataque_crudo + FACTOR_SUAVIZADO * prom_goles_liga
-    ) / (n_partidos + FACTOR_SUAVIZADO)
+    if modificador_activo('suavizado'):
+        ataque_suavizado = (
+            n_partidos * ataque_crudo + FACTOR_SUAVIZADO * prom_goles_liga
+        ) / (n_partidos + FACTOR_SUAVIZADO)
+    else:
+        # Sin suavizado: usar el crudo tal cual
+        ataque_suavizado = ataque_crudo
 
     # ========== 5. Defensa del rival (con suavizado) ==========
     goles_permitidos_rival = stats_rival.get("rival_goles")
 
-    if goles_permitidos_rival is None or goles_permitidos_rival == 0:
+    # ⚠️ BUG FIX (BLOQUE 1): distinguir None (sin dato) de 0 (dato real)
+    if goles_permitidos_rival is None:
+        # Sin datos: usar promedio de liga como fallback
         defensa_cruda = prom_goles_liga
+        defensa_fuente = 'fallback_sin_datos'
     else:
-        defensa_cruda = goles_permitidos_rival
+        # Sí hay dato (incluido 0): usarlo tal cual
+        # Si es 0, aplicar mínimo MUY bajo para evitar divisiones por 0
+        # pero respetando que la defensa es excelente
+        defensa_cruda = max(0.1, goles_permitidos_rival)
+        defensa_fuente = 'observado' if goles_permitidos_rival > 0 else 'observado_cero'
 
     # ✅ SUAVIZADO de la defensa
     n_partidos_rival = len(partidos_rival)
-    defensa_suavizada = (
-        n_partidos_rival * defensa_cruda + FACTOR_SUAVIZADO * prom_goles_liga
-    ) / (n_partidos_rival + FACTOR_SUAVIZADO)
+    if modificador_activo('suavizado'):
+        defensa_suavizada = (
+            n_partidos_rival * defensa_cruda + FACTOR_SUAVIZADO * prom_goles_liga
+        ) / (n_partidos_rival + FACTOR_SUAVIZADO)
+    else:
+        defensa_suavizada = defensa_cruda
 
     # ========== 6. Tendencia ==========
     tendencia = detectar_tendencia(partidos_equipo, campo="goles")
-    factor_tendencia = tendencia.get("factor", 1.0)
+    factor_tendencia = tendencia.get("factor", 1.0) if modificador_activo('tendencia') else 1.0
 
     # ========== 7. Factor de localía ==========
-    factor_localia = _calcular_factor_localia(equipo, como_local, liga_pronostico)
+    # Solo calcular si algún modificador de localía está activo
+    # ========== 7. Factor de localía ==========
+    # Si CUALQUIERA de los 3 está activo, calcular localía
+    # pero respetar los que estén desactivados individualmente
+    factor_localia = _calcular_factor_localia(
+        equipo, como_local, liga_pronostico,
+        usar_generica=modificador_activo('localia_generica'),
+        usar_empirica=modificador_activo('localia_empirica'),
+        usar_liga=modificador_activo('localia_liga'),
+    )
+    
     localia_liga_info = (
         calcular_localia_liga(liga_pronostico)
-        if liga_pronostico
+        if liga_pronostico and modificador_activo('localia_liga')
         else {"factor": None, "fuente": "sin_datos", "partidos": 0}
     )
 
@@ -1326,18 +1450,37 @@ def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
         prom_goles_liga = 1.4
 
     # ========== FEATURES AVANZADAS (FASE 8.6) ==========
-    factor_ratio, ratio_valor = _calcular_factor_ratio(stats_equipo, stats_rival)
-    factor_diferencial, dif_valor = _calcular_factor_diferencial(stats_equipo)
-    factor_racha_v2, racha_v2_tipo = _calcular_factor_racha_v2(
-        equipo, liga_pronostico, como_local
-    )
+    if modificador_activo('ratio'):
+        factor_ratio, ratio_valor = _calcular_factor_ratio(stats_equipo, stats_rival)
+    else:
+        factor_ratio, ratio_valor = 1.0, None
+    
+    if modificador_activo('diferencial'):
+        factor_diferencial, dif_valor = _calcular_factor_diferencial(stats_equipo)
+    else:
+        factor_diferencial, dif_valor = 1.0, None
+    
+    if modificador_activo('racha_v2'):
+        factor_racha_v2, racha_v2_tipo = _calcular_factor_racha_v2(
+            equipo, liga_pronostico, como_local, fecha_corte=fecha_corte
+        )
+    else:
+        factor_racha_v2, racha_v2_tipo = 1.0, 'desactivado'
+        
+    if prom_liga_fuente == 'fallback':
+        factor_fuente = 0.90
+    elif prom_liga_fuente == 'estimado':
+        factor_fuente = 0.95
+    # else: factor_fuente = 1.00 (ya inicializado)
 
     lam = (ataque_suavizado * defensa_suavizada) / prom_goles_liga
     lam = lam * factor_localia * factor_tendencia
     lam = lam * factor_ratio * factor_diferencial * factor_racha_v2
+    lam = lam * factor_fuente
     # ========== APRENDIZAJE: corrección de sesgo por equipo ==========
-    from database.aprendizaje import aplicar_correccion_lambda
-    lam = aplicar_correccion_lambda(lam, equipo, como_local)
+    if modificador_activo('aprendizaje_sesgo'):
+        from database.aprendizaje import aplicar_correccion_lambda
+        lam = aplicar_correccion_lambda(lam, equipo, como_local, fecha_corte=fecha_corte)
 
     # Limitar a rango razonable
     lam = max(0.2, min(5.0, lam))
@@ -1357,9 +1500,14 @@ def calcular_lambda_poisson(equipo, rival, como_local, liga_pronostico=None):
     return {
         "lambda": round(lam, 3),
         "contexto": contexto_features,
+        "promedio_liga_fuente": prom_liga_fuente,       # ← NUEVO
+        "promedio_liga_partidos": prom_liga_partidos,   # ← NUEVO
+        "factor_fuente": factor_fuente,                 # ← NUEVO
         # Valores crudos
         "ataque_crudo": round(ataque_crudo, 3),
         "defensa_cruda": round(defensa_cruda, 3),
+        "ataque_fuente": ataque_fuente,  # ← NUEVO
+        "defensa_fuente": defensa_fuente,  # ← NUEVO: trazabilidad        
         # Valores suavizados
         "ataque_suavizado": round(ataque_suavizado, 3),
         "defensa_suavizada": round(defensa_suavizada, 3),
@@ -1594,7 +1742,7 @@ _CACHE_RHO_LIGA = {}
 RHO_DEFAULT = -0.10
 
 
-def estimar_rho_dixon_coles(liga=None, temporada=None, min_partidos=30):
+def estimar_rho_dixon_coles(liga=None, temporada=None, min_partidos=30, fecha_corte=None):
     """
     Estima el parámetro ρ de Dixon-Coles empíricamente del histórico.
     
@@ -1615,7 +1763,7 @@ def estimar_rho_dixon_coles(liga=None, temporada=None, min_partidos=30):
             'log_likelihood': float or None,
         }
     """
-    cache_key = f"{liga or 'all'}|{temporada or 'all'}"
+    cache_key = f"{liga or 'all'}|{temporada or 'all'}|{fecha_corte or 'all'}"
     if cache_key in _CACHE_RHO_LIGA:
         return _CACHE_RHO_LIGA[cache_key]
     
@@ -1631,16 +1779,22 @@ def estimar_rho_dixon_coles(liga=None, temporada=None, min_partidos=30):
     c = conn.cursor()
     
     try:
-        # Obtener partidos con goles
-        if liga and temporada:
-            filtro = "WHERE p.liga = ? AND p.temporada = ?"
-            params = (liga, temporada)
-        elif liga:
-            filtro = "WHERE p.liga = ?"
-            params = (liga,)
-        else:
-            filtro = ""
-            params = ()
+        # Construir filtro dinámico
+        condiciones = []
+        params = []
+
+        if liga:
+            condiciones.append("p.liga = ?")
+            params.append(liga)
+        if temporada:
+            condiciones.append("p.temporada = ?")
+            params.append(temporada)
+        if fecha_corte:
+            condiciones.append("p.fecha < ?")
+            params.append(fecha_corte)
+
+        filtro = "WHERE " + " AND ".join(condiciones) if condiciones else ""
+        params = tuple(params)
         
         c.execute(f"""
             SELECT 
@@ -1908,7 +2062,7 @@ def calcular_mercados_poisson(lambda_local, lambda_visitante, max_goles=8,
 # ============================================================
 # H2H
 # ============================================================
-def obtener_h2h(equipo1, equipo2, limite=10):
+def obtener_h2h(equipo1, equipo2, limite=10, fecha_corte=None):
     """
     Devuelve los últimos enfrentamientos directos entre 2 equipos.
     Sin límite mínimo.
@@ -1918,20 +2072,27 @@ def obtener_h2h(equipo1, equipo2, limite=10):
     c = conn.cursor()
 
     try:
+        # Filtro dinámico de fecha
+        filtro_fecha = ''
+        params_extra = []
+        if fecha_corte:
+            filtro_fecha = ' AND p.fecha < ?'
+            params_extra = [fecha_corte]
+
         c.execute(
-            """
+            f"""
             SELECT 
                 p.id, p.fecha, p.liga, p.temporada,
                 p.local, p.visitante,
                 (SELECT SUM(G) FROM estadisticas_local WHERE partido_id = p.id) as goles_local,
                 (SELECT SUM(G) FROM estadisticas_visitante WHERE partido_id = p.id) as goles_visitante
             FROM partidos p
-            WHERE (p.local = ? AND p.visitante = ?)
-               OR (p.local = ? AND p.visitante = ?)
+            WHERE ((p.local = ? AND p.visitante = ?)
+               OR (p.local = ? AND p.visitante = ?)){filtro_fecha}
             ORDER BY p.fecha DESC
             LIMIT ?
         """,
-            (equipo1, equipo2, equipo2, equipo1, limite),
+            [equipo1, equipo2, equipo2, equipo1] + params_extra + [limite],
         )
 
         partidos = []
@@ -2063,7 +2224,7 @@ def _probabilidad_binomial(prob_evento, n_intentos, k_exitos):
 
 
 def calcular_probabilidades_jugador(
-    jugador, equipo, como_local=None, liga_pronostico=None
+    jugador, equipo, como_local=None, liga_pronostico=None, fecha_corte=None
 ):
     """
     Calcula probabilidades de eventos futuros para un jugador
@@ -2076,15 +2237,22 @@ def calcular_probabilidades_jugador(
 
     try:
         # Obtener los partidos del equipo (máx 10 recientes, sin filtro de localía)
+        # Filtro dinámico de fecha
+        filtro_fecha = ''
+        params_extra = []
+        if fecha_corte:
+            filtro_fecha = ' AND p.fecha < ?'
+            params_extra = [fecha_corte]
+
         c.execute(
-            """
+            f"""
             SELECT p.id, p.fecha
             FROM partidos p
-            WHERE (p.local = ? OR p.visitante = ?)
+            WHERE (p.local = ? OR p.visitante = ?){filtro_fecha}
             ORDER BY p.fecha DESC
             LIMIT 10
         """,
-            (equipo, equipo),
+            [equipo, equipo] + params_extra,
         )
         partidos_recientes = [r["id"] for r in c.fetchall()]
 
@@ -2325,7 +2493,7 @@ def calcular_probabilidades_jugador(
 # ============================================================
 # DETECCIÓN DE PORTEROS (FASE 9.2)
 # ============================================================
-def detectar_porteros(equipo, min_partidos=3, ventana=10):
+def detectar_porteros(equipo, min_partidos=3, ventana=10, fecha_corte=None):
     """
     Detecta jugadores que son porteros usando una heurística multi-señal.
     
@@ -2365,11 +2533,18 @@ def detectar_porteros(equipo, min_partidos=3, ventana=10):
     
     try:
         # Obtener IDs de los últimos `ventana` partidos del equipo
-        c.execute('''
+        # Filtro dinámico de fecha
+        filtro_fecha = ''
+        params_extra = []
+        if fecha_corte:
+            filtro_fecha = ' AND p.fecha < ?'
+            params_extra = [fecha_corte]
+
+        c.execute(f'''
             SELECT p.id FROM partidos p
-            WHERE p.local = ? OR p.visitante = ?
+            WHERE (p.local = ? OR p.visitante = ?){filtro_fecha}
             ORDER BY p.fecha DESC LIMIT ?
-        ''', (equipo, equipo, ventana))
+        ''', [equipo, equipo] + params_extra + [ventana])
         partidos_ids = [r[0] for r in c.fetchall()]
         
         if not partidos_ids:
@@ -2475,7 +2650,7 @@ def detectar_porteros(equipo, min_partidos=3, ventana=10):
         conn.close()
 
 def obtener_top_jugadores_probabilidades(
-    equipo, categoria="goleadores", limite=5, liga_pronostico=None
+    equipo, categoria="goleadores", limite=5, liga_pronostico=None, fecha_corte=None
 ):
     """
     Devuelve los top N jugadores con sus probabilidades calculadas.
@@ -2493,13 +2668,20 @@ def obtener_top_jugadores_probabilidades(
 
     try:
         # Obtener los últimos 10 partidos del equipo
+        # Filtro dinámico de fecha
+        filtro_fecha = ''
+        params_extra = []
+        if fecha_corte:
+            filtro_fecha = ' AND p.fecha < ?'
+            params_extra = [fecha_corte]
+
         c.execute(
-            """
+            f"""
             SELECT p.id FROM partidos p
-            WHERE p.local = ? OR p.visitante = ?
+            WHERE (p.local = ? OR p.visitante = ?){filtro_fecha}
             ORDER BY p.fecha DESC LIMIT 10
         """,
-            (equipo, equipo),
+            [equipo, equipo] + params_extra,
         )
         partidos_ids = [r[0] for r in c.fetchall()]
 
@@ -2534,7 +2716,7 @@ def obtener_top_jugadores_probabilidades(
             )
         elif categoria == 'porteros':
             # ========== NUEVA LÓGICA (FASE 9.2): heurística de detección ==========
-            deteccion = detectar_porteros(equipo, min_partidos=3, ventana=10)
+            deteccion = detectar_porteros(equipo, min_partidos=3, ventana=10, fecha_corte=fecha_corte)
             candidatos = [p['nombre'] for p in deteccion['porteros']]
             
         elif categoria == "tiros":
@@ -2557,7 +2739,8 @@ def obtener_top_jugadores_probabilidades(
         resultados = []
         for jugador in candidatos:
             probs = calcular_probabilidades_jugador(
-                jugador, equipo, liga_pronostico=liga_pronostico
+                jugador, equipo, liga_pronostico=liga_pronostico,
+                fecha_corte=fecha_corte
             )
             if probs:
                 resultados.append(probs)
@@ -2617,7 +2800,7 @@ def obtener_top_jugadores_probabilidades(
 # ============================================================
 # PROMEDIOS DE LIGA (A3.2)
 # ============================================================
-def calcular_promedios_liga(liga, temporada=None):
+def calcular_promedios_liga(liga, temporada=None, fecha_corte=None):
     """
     Calcula los promedios de referencia de una liga.
     Usa media y mediana para robustez.
@@ -2642,13 +2825,20 @@ def calcular_promedios_liga(liga, temporada=None):
     c = conn.cursor()
 
     try:
-        # Filtro de temporada
+        # Filtro de temporada + fecha_corte
+        condiciones = ["liga = ?"]
+        params = [liga]
+
         if temporada:
-            filtro = "WHERE liga = ? AND temporada = ?"
-            params = (liga, temporada)
-        else:
-            filtro = "WHERE liga = ?"
-            params = (liga,)
+            condiciones.append("temporada = ?")
+            params.append(temporada)
+
+        if fecha_corte:
+            condiciones.append("fecha < ?")
+            params.append(fecha_corte)
+
+        filtro = "WHERE " + " AND ".join(condiciones)
+        params = tuple(params)
 
         # ===== Obtener todos los partidos de la liga =====
         c.execute(
@@ -2940,7 +3130,7 @@ def _calcular_factor_tendencia_metrica(partidos, campo, cap=0.04):
 # ============================================================
 # MODELO DE CÓRNERS (5D.1)
 # ============================================================
-def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
+def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None, fecha_corte=None):
     """
     Calcula λ (córners esperados) para un equipo.
 
@@ -2951,7 +3141,8 @@ def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
     """
     # Partidos del equipo
     partidos_equipo = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_equipo) < MIN_PARTIDOS_BAJO:
@@ -2962,7 +3153,8 @@ def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
 
     # Partidos del rival
     partidos_rival = obtener_partidos_historicos(
-        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_rival) < MIN_PARTIDOS_BAJO:
@@ -2995,7 +3187,8 @@ def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
 
     # Ajustar por condición
     partidos_condicion = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=10
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=10,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos_condicion) >= 3:
@@ -3023,7 +3216,7 @@ def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
     ) / (n_rival + FACTOR_SUAVIZADO)
 
     # Factor localía
-    factor_localia = _calcular_factor_localia(equipo, como_local, liga_pronostico)
+    factor_localia = _calcular_factor_localia(equipo, como_local, liga_pronostico, fecha_corte=fecha_corte)
 
     # ========== FEATURES AVANZADAS (FE-3) ==========
     factor_racha_c, tipo_racha_c = _calcular_factor_racha_metrica(
@@ -3063,7 +3256,7 @@ def calcular_lambda_corners(equipo, rival, como_local, liga_pronostico=None):
 # ============================================================
 # MODELO DE TARJETAS (5D.2)
 # ============================================================
-def calcular_lambda_tarjetas(equipo, rival, como_local, liga_pronostico=None):
+def calcular_lambda_tarjetas(equipo, rival, como_local, liga_pronostico=None, fecha_corte=None):
     """
     Calcula λ (tarjetas esperadas) para un equipo.
 
@@ -3071,7 +3264,7 @@ def calcular_lambda_tarjetas(equipo, rival, como_local, liga_pronostico=None):
     Las rojas cuentan como 2 puntos (más graves).
     """
     partidos_equipo = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=15, fecha_corte=fecha_corte
     )
 
     if len(partidos_equipo) < MIN_PARTIDOS_BAJO:
@@ -3081,7 +3274,7 @@ def calcular_lambda_tarjetas(equipo, rival, como_local, liga_pronostico=None):
         }
 
     partidos_rival = obtener_partidos_historicos(
-        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15
+        rival, como_local=None, liga_pronostico=liga_pronostico, limite=15, fecha_corte=fecha_corte
     )
 
     if len(partidos_rival) < MIN_PARTIDOS_BAJO:
@@ -3293,7 +3486,7 @@ def calcular_mercados_tarjetas(lambda_local, lambda_visitante, max_tarjetas=15):
 # ============================================================
 # DETECCIÓN DE RACHAS (5E)
 # ============================================================
-def detectar_racha(equipo, liga_pronostico=None, limite=10):
+def detectar_racha(equipo, liga_pronostico=None, limite=10, fecha_corte=None):
     """
     Detecta la racha actual de un equipo.
 
@@ -3307,7 +3500,8 @@ def detectar_racha(equipo, liga_pronostico=None, limite=10):
     """
     # Obtener partidos (con resultado)
     partidos = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=limite
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=limite,
+        fecha_corte=fecha_corte
     )
 
     if len(partidos) < RACHA_MINIMA:
@@ -3422,7 +3616,7 @@ def detectar_racha(equipo, liga_pronostico=None, limite=10):
 # ============================================================
 # VENTANAS MÚLTIPLES (5E)
 # ============================================================
-def calcular_stats_multiples_ventanas(equipo, liga_pronostico=None, como_local=None):
+def calcular_stats_multiples_ventanas(equipo, liga_pronostico=None, como_local=None, fecha_corte=None):
     """
     Calcula estadísticas usando múltiples ventanas temporales y las combina.
 
@@ -3443,7 +3637,8 @@ def calcular_stats_multiples_ventanas(equipo, liga_pronostico=None, como_local=N
 
         # Obtener partidos
         partidos = obtener_partidos_historicos(
-            equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=n
+            equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=n,
+            fecha_corte=fecha_corte
         )
 
         if len(partidos) < 3:
@@ -3529,7 +3724,7 @@ def calcular_stats_multiples_ventanas(equipo, liga_pronostico=None, como_local=N
 # ============================================================
 # SAMPLE QUALITY SCORE (B.1)
 # ============================================================
-def calcular_sample_quality_score(equipo, liga_pronostico=None, como_local=None):
+def calcular_sample_quality_score(equipo, liga_pronostico=None, como_local=None, fecha_corte=None):
     """
     Calcula un score de 0 a 100 que indica qué tan fiable es la muestra
     de datos disponible para un equipo.
@@ -3553,7 +3748,7 @@ def calcular_sample_quality_score(equipo, liga_pronostico=None, como_local=None)
     """
     # ========== 1. CANTIDAD DE PARTIDOS (0-30) ==========
     partidos = obtener_partidos_historicos(
-        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=30
+        equipo, como_local=None, liga_pronostico=liga_pronostico, limite=30, fecha_corte=fecha_corte
     )
     n_partidos = len(partidos)
 
@@ -3583,7 +3778,7 @@ def calcular_sample_quality_score(equipo, liga_pronostico=None, como_local=None)
 
     # ========== 3. COBERTURA LOCAL/VISITANTE (0-15) ==========
     partidos_condicion = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=15
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=15, fecha_corte=fecha_corte
     )
     n_condicion = len(partidos_condicion)
 
@@ -3889,7 +4084,7 @@ def calcular_n_efectivo(partidos):
 
 
 def calcular_n_efectivo_por_condicion(
-    equipo, como_local, liga_pronostico=None, limite=15
+    equipo, como_local, liga_pronostico=None, limite=15, fecha_corte=None
 ):
     """
     Calcula el N efectivo para un equipo en una condición específica.
@@ -3899,7 +4094,7 @@ def calcular_n_efectivo_por_condicion(
     """
     # Partidos en la condición correcta
     partidos_condicion = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=limite
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=limite, fecha_corte=fecha_corte
     )
     n_cond = calcular_n_efectivo(partidos_condicion)
     n_cond["n_condicion"] = len(partidos_condicion)
@@ -3910,6 +4105,7 @@ def calcular_n_efectivo_por_condicion(
         como_local=(not como_local),
         liga_pronostico=liga_pronostico,
         limite=limite,
+        fecha_corte=fecha_corte
     )
     n_op = calcular_n_efectivo(partidos_opuestos)
 
@@ -4039,13 +4235,13 @@ def calcular_hit_rates(valores, lineas):
 # DISTRIBUCIÓN COMPLETA DE UN EQUIPO (P3)
 # ============================================================
 def calcular_distribucion_equipo(
-    equipo, liga_pronostico=None, como_local=None, limite=15
+    equipo, liga_pronostico=None, como_local=None, limite=15, fecha_corte=None
 ):
     """
     Calcula la distribución completa de un equipo para todas las métricas clave.
     """
     partidos = obtener_partidos_historicos(
-        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=limite
+        equipo, como_local=como_local, liga_pronostico=liga_pronostico, limite=limite, fecha_corte=fecha_corte
     )
 
     if not partidos:

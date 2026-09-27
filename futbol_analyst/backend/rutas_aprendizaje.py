@@ -25,9 +25,14 @@ def api_aprendizaje_estado():
 
 @bp_aprendizaje.route('/api/aprendizaje/recalcular', methods=['POST'])
 def api_aprendizaje_recalcular():
+    from flask import request
     init_tabla_aprendizaje()
+    
+    data = request.json or {}
+    fecha_corte = data.get('fecha_corte', None)
+    
     try:
-        resultado = recalcular_aprendizaje_completo()
+        resultado = recalcular_aprendizaje_completo(fecha_corte=fecha_corte)
         return jsonify({'success': True, **resultado})
     except Exception as e:
         return jsonify({'error': str(e)})
