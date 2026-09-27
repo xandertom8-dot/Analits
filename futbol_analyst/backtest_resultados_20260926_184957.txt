@@ -1,0 +1,34 @@
+BACKTESTING MODIFICADORES (FASE A) v2
+======================================================================
+Fecha: 2026-09-26T18:49:58.486543
+Partidos cargados: 500
+MIN_PARTIDOS: 5
+N_PARTIDOS: 500
+
+--- BASE ---
+Evaluados: 161
+MAE total: 1.4221
+RMSE total: 1.7723
+Tiempo: 322.0s
+
+--- POR MODIFICADOR ---
+decay: MAE=1.422 Δ=-0.0001 ⚪ NEUTRO
+suavizado: MAE=1.5923 Δ=+0.1702 ✅ APORTA
+localia_generica: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+localia_empirica: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+localia_liga: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+tendencia: MAE=1.4303 Δ=+0.0082 ⚪ NEUTRO
+racha: MAE=1.4237 Δ=+0.0016 ⚪ NEUTRO
+racha_v2: MAE=1.4212 Δ=-0.0009 ⚪ NEUTRO
+ratio: MAE=1.4254 Δ=+0.0033 ⚪ NEUTRO
+diferencial: MAE=1.4234 Δ=+0.0013 ⚪ NEUTRO
+peso_competicion: MAE=1.426 Δ=+0.0039 ⚪ NEUTRO
+peso_rival: MAE=1.4079 Δ=-0.0142 ❌ PERJUDICA
+negbin: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+dixon_coles: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+aprendizaje_sesgo: MAE=1.4221 Δ=+0.0000 ⚪ NEUTRO
+
+--- RESUMEN ---
+APORTAN: ['suavizado']
+PERJUDICAN: ['peso_rival']
+NEUTROS: ['decay', 'localia_generica', 'localia_empirica', 'localia_liga', 'tendencia', 'racha', 'racha_v2', 'ratio', 'diferencial', 'peso_competicion', 'negbin', 'dixon_coles', 'aprendizaje_sesgo']
